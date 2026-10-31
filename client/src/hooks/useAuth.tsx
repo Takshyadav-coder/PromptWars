@@ -1,10 +1,10 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
-import { supabase, isSupabaseConfigured } from '../supabase';
 import { UserProfile } from '@leetquest/shared';
 
 interface AuthUser {
   id: string;
   email: string;
+  displayName?: string;
 }
 
 interface AuthContextType {
@@ -19,6 +19,8 @@ interface AuthContextType {
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
+
+const TOKEN_KEY = 'leetquest_auth_token';
 
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [user, setUser] = useState<AuthUser | null>(null);
@@ -43,75 +45,59 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   };
 
   useEffect(() => {
-    if (isSupabaseConfigured && supabase) {
-      // Check existing session
-      supabase.auth.getSession().then(({ data: { session } }) => {
-        if (session) {
-          setUser({ id: session.user.id, email: session.user.email || '' });
-          setToken(session.access_token);
-          fetchProfile(session.access_token);
-        }
-        setIsLoading(false);
-      });
-
-      const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
-        if (session) {
-          setUser({ id: session.user.id, email: session.user.email || '' });
-          setToken(session.access_token);
-          fetchProfile(session.access_token);
-        } else {
-          setUser(null);
-          setToken(null);
-          setProfile(null);
-        }
-        setIsLoading(false);
-      });
-
-      return () => {
-        subscription.unsubscribe();
-      };
-    } else {
-      // Offline/Local Demo Mode
-      const storedUser = localStorage.getItem('lq_demo_user');
-      if (storedUser) {
-        try {
-          const parsed = JSON.parse(storedUser);
-          setUser(parsed);
-          setToken(parsed.id);
-          fetchProfile(parsed.id);
-        } catch {
-          localStorage.removeItem('lq_demo_user');
-        }
-      }
+    const savedToken = localStorage.getItem(TOKEN_KEY);
+    if (!savedToken) {
       setIsLoading(false);
+      return;
     }
+
+    setToken(savedToken);
+    fetch('/api/auth/me', {
+      headers: {
+        Authorization: `Bearer ${savedToken}`,
+      },
+    })
+      .then((res) => {
+        if (!res.ok) throw new Error('Session invalid');
+        return res.json();
+      })
+      .then((data) => {
+        setUser(data.user);
+        setProfile(data.profile);
+      })
+      .catch(() => {
+        localStorage.removeItem(TOKEN_KEY);
+        setToken(null);
+        setUser(null);
+        setProfile(null);
+      })
+      .finally(() => {
+        setIsLoading(false);
+      });
   }, []);
 
   const login = async (email: string, password: string): Promise<{ error?: string }> => {
-    if (isSupabaseConfigured && supabase) {
-      const { data, error } = await supabase.auth.signInWithPassword({
-        email,
-        password,
+    try {
+      const res = await fetch('/api/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email, password }),
       });
-      if (error) return { error: error.message };
-      if (data.session) {
-        setUser({ id: data.session.user.id, email: data.session.user.email || '' });
-        setToken(data.session.access_token);
-        await fetchProfile(data.session.access_token);
-      }
-      return {};
-    }
+      const data = await res.json();
 
-    // Demo login
-    const demoUser = {
-      id: `user_${email.replace(/[^a-zA-Z0-9]/g, '_')}`,
-      email,
-    };
-    localStorage.setItem('lq_demo_user', JSON.stringify(demoUser));
-    setUser(demoUser);
-    setToken(demoUser.id);
-    await fetchProfile(demoUser.id);
-    return {};
+      if (!res.ok) {
+        return { error: data.error || 'Login failed' };
+      }
+
+      localStorage.setItem(TOKEN_KEY, data.token);
+      setToken(data.token);
+      setUser(data.user);
+      setProfile(data.profile);
+      return {};
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'Network error';
+      return { error: msg };
+    }
   };
 
   const register = async (
@@ -119,57 +105,33 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     password: string,
     displayName?: string
   ): Promise<{ error?: string }> => {
-    if (isSupabaseConfigured && supabase) {
-      const { data, error } = await supabase.auth.signUp({
-        email,
-        password,
-        options: {
-          data: {
-            display_name: displayName || email.split('@')[0],
-          },
-        },
-      });
-      if (error) return { error: error.message };
-      if (data.session) {
-        setUser({ id: data.session.user.id, email: data.session.user.email || '' });
-        setToken(data.session.access_token);
-        await fetchProfile(data.session.access_token);
-      }
-      return {};
-    }
-
-    // Demo register
-    const demoUser = {
-      id: `user_${email.replace(/[^a-zA-Z0-9]/g, '_')}`,
-      email,
-    };
-    localStorage.setItem('lq_demo_user', JSON.stringify(demoUser));
-    setUser(demoUser);
-    setToken(demoUser.id);
-
-    // Create profile
     try {
-      await fetch('/api/profile', {
-        method: 'PUT',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${demoUser.id}`,
-        },
-        body: JSON.stringify({ displayName: displayName || email.split('@')[0] }),
+      const res = await fetch('/api/auth/register', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email, password, displayName }),
       });
-    } catch {}
+      const data = await res.json();
 
-    await fetchProfile(demoUser.id);
-    return {};
+      if (!res.ok) {
+        return { error: data.error || 'Registration failed' };
+      }
+
+      localStorage.setItem(TOKEN_KEY, data.token);
+      setToken(data.token);
+      setUser(data.user);
+      setProfile(data.profile);
+      return {};
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'Network error';
+      return { error: msg };
+    }
   };
 
   const logout = async () => {
-    if (isSupabaseConfigured && supabase) {
-      await supabase.auth.signOut();
-    }
-    localStorage.removeItem('lq_demo_user');
-    setUser(null);
+    localStorage.removeItem(TOKEN_KEY);
     setToken(null);
+    setUser(null);
     setProfile(null);
   };
 

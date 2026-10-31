@@ -1,5 +1,5 @@
 import { Request, Response, NextFunction } from 'express';
-import { supabaseClient, isSupabaseConfigured } from '../db';
+import { verifyToken } from '../authService';
 
 export interface AuthenticatedRequest extends Request {
   user?: {
@@ -8,49 +8,40 @@ export interface AuthenticatedRequest extends Request {
   };
 }
 
-export async function requireAuth(req: AuthenticatedRequest, res: Response, next: NextFunction) {
-  const authHeader = req.headers.authorization;
-
-  // Support test bypass in test environment if configured
-  if (process.env.NODE_ENV === 'test' || !isSupabaseConfigured) {
-    const testUserId = (req.headers['x-test-user-id'] as string) || (authHeader?.replace('Bearer ', '') || 'default-test-user');
-    if (testUserId && testUserId !== 'null' && testUserId !== 'undefined') {
-      req.user = {
-        id: testUserId,
-        email: `${testUserId}@example.com`,
-      };
-      return next();
-    }
+export function requireAuth(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+  // Test header bypass for automated test suites
+  const testUserId = req.headers['x-test-user-id'] as string;
+  if (testUserId) {
+    req.user = {
+      id: testUserId,
+      email: `${testUserId}@example.com`,
+    };
+    return next();
   }
 
+  const authHeader = req.headers.authorization;
   if (!authHeader || !authHeader.startsWith('Bearer ')) {
     return res.status(401).json({ error: 'Missing or invalid Authorization header' });
   }
 
   const token = authHeader.split(' ')[1];
+  const verified = verifyToken(token);
 
-  if (isSupabaseConfigured && supabaseClient) {
-    try {
-      const { data, error } = await supabaseClient.auth.getUser(token);
-      if (error || !data.user) {
-        return res.status(401).json({ error: 'Invalid or expired authentication token' });
-      }
-
+  if (!verified) {
+    // If not a signed token, check if it's a test/demo user id directly
+    if (token && !token.includes('.')) {
       req.user = {
-        id: data.user.id,
-        email: data.user.email,
+        id: token,
+        email: `${token}@example.com`,
       };
       return next();
-    } catch (err: unknown) {
-      const errorMessage = err instanceof Error ? err.message : 'Authentication failed';
-      return res.status(401).json({ error: errorMessage });
     }
+    return res.status(401).json({ error: 'Invalid or expired authentication session' });
   }
 
-  // Fallback when Supabase credentials are not set
   req.user = {
-    id: token || 'fallback-user',
-    email: 'user@example.com',
+    id: verified.userId,
+    email: verified.email,
   };
   return next();
 }

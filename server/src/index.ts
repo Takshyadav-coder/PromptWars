@@ -4,6 +4,7 @@ import path from 'path';
 import fs from 'fs';
 import dotenv from 'dotenv';
 import { requireAuth } from './middleware/auth';
+import authRouter from './routes/auth';
 import problemsRouter from './routes/problems';
 import missionsRouter from './routes/missions';
 import statsRouter from './routes/stats';
@@ -26,6 +27,9 @@ app.get('/healthz', (_req: Request, res: Response) => {
     timestamp: new Date().toISOString(),
   });
 });
+
+// Authentication Routes
+app.use('/api/auth', authRouter);
 
 // Protected API Routes
 app.use('/api/problems', requireAuth, problemsRouter);

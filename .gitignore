@@ -4,5 +4,6 @@ dist/
 .env.local
 coverage/
 test-results/
+data/
 .DS_Store
 *.log
